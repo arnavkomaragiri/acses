@@ -6,7 +6,7 @@ import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 
-from model import encode_sentences
+from model import encode_sentences, load_model
 from store_visualize import load_embeds, tsne_reduce_dataset
 from typing import List, Tuple, Dict
 
@@ -34,7 +34,7 @@ def save_query_data(data_path: str, query_data: Dict):
 
 
 def query_index(index, query: str, query_data: Dict, k: int = 5) -> Tuple:
-    embedding = encode_sentences([query])
+    embedding = encode_sentences(model, [query])
     scores, idx = index.search(embedding, k=k)
     misinf_ratios = query_data['misinf_ratio'][idx]
     return query_data['sentences'][idx], query_data['categories'][idx], query_data['urls'][idx], scores, misinf_ratios > 0.8, idx
@@ -69,6 +69,7 @@ if __name__ == "__main__":
     args = parse_args()
     index_path, data_path = get_index_query_files()
     index, data = load_index(index_path), load_query_data(data_path)
+    model = load_model()
 
     while (query_str := input("Enter the Query String, or enter QUIT to quit: ")).strip().lower() != "quit":
         sentences, categories, urls, scores, misinf, idx = query_index(index, query_str, data)
@@ -82,7 +83,7 @@ if __name__ == "__main__":
         good_idx = idx[~misinf]
         if args.visualize:
             _, _, embeds = load_embeds(data["embed_file"]) 
-            query_embed = encode_sentences([query_str])
+            query_embed = encode_sentences(model, [query_str])
             disp_embeds = tsne_reduce_dataset(np.concatenate((embeds, query_embed)), n_components=3)
 
             good_disp_embeds = disp_embeds[good_idx]

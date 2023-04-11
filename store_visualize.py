@@ -6,7 +6,9 @@ import pickle
 import numpy as np
 import matplotlib.pyplot as plt
 
-from model import encode_sentences
+from sentence_transformers import SentenceTransformer
+from model import encode_sentences, load_model
+from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from typing import List, Dict, Tuple
 
@@ -20,6 +22,7 @@ def load_dataset(dataset_path: str):
     return dataset
 
 def tsne_reduce_dataset(embeddings: np.ndarray, n_components: int = 2, perplexity: int = 30) -> np.ndarray:
+    embeddings = PCA(n_components=50).fit_transform(embeddings)
     reduction: TSNE = TSNE(n_components=n_components, perplexity=perplexity)
     disp_embeds: np.ndarray = reduction.fit_transform(embeddings)
     return disp_embeds
@@ -51,11 +54,11 @@ def build_faiss_index(index_str: str, embeddings: np.ndarray):
     index.add_with_ids(embeddings, np.arange(embeddings.shape[0]))
     return index
 
-
 if __name__ == "__main__":
     embed_file = input("Input Embedding Filename: ")
     dataset_path = input("Input Dataset Path: ")
     dataset: List[Dict] = load_dataset(dataset_path)
+    model: SentenceTransformer = load_model()
 
     num_sentences: int = 1000
 
@@ -71,13 +74,13 @@ if __name__ == "__main__":
         dataset_sentences = dataset_sentences[~empty_sentences]
         categories = categories[~empty_sentences]
 
-        idx = balance_dataset_idx(categories, num_sentences)
-        dataset_sentences = dataset_sentences[idx]
-        categories = categories[idx]
-        urls = urls[idx]
+        # idx = balance_dataset_idx(categories, num_sentences)
+        # dataset_sentences = dataset_sentences[idx]
+        # categories = categories[idx]
+        # urls = urls[idx]
 
         print("Generating Text Embeddings")
-        embeddings = encode_sentences(dataset_sentences.tolist())
+        embeddings = encode_sentences(model, dataset_sentences.tolist())
         print("Saving Embeddings")
         save_embeds(dataset_sentences, embeddings, categories, embed_file)
 
@@ -89,7 +92,7 @@ if __name__ == "__main__":
             "misinf_ratio": np.zeros(len(urls)).tolist(), 
             "n_queries": np.zeros(len(urls)).tolist()
         }
-        with open(f"search_{num_sentences}.json", "w") as f:
+        with open(f"search_full.json", "w") as f:
             f.write(json.dumps(query_data))
 
     idx = balance_dataset_idx(categories, num_sentences)
@@ -111,10 +114,9 @@ if __name__ == "__main__":
     plt.show()
 
     index = build_faiss_index("HNSW64,IDMap", embeddings)
-    faiss.write_index(index, f"search_{num_sentences}.index")
+    faiss.write_index(index, f"search_full.index")
     query_str = input("Input Query String: ")
-    query_embed = encode_sentences([query_str])
+    query_embed = encode_sentences(model, [query_str])
     dist, idx = index.search(query_embed, k=5)
     for i in idx:
         print(dataset_sentences[i])
-    
