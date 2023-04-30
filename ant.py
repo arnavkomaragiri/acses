@@ -4,7 +4,7 @@ import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 
-from network import LatticeNetwork
+from network import LatticeNetwork, euclidean_dist, ip_dist, inv_cos_dist
 from enum import Enum
 from tqdm import tqdm
 from typing import Tuple, Callable
@@ -13,16 +13,10 @@ rng = np.random.default_rng(seed=0)
 
 AntState = Enum('AntState', ['FOLLOW', 'RECOVER', 'STOPPED'])
 
-def euclidean_dist(a: np.ndarray, b: np.ndarray) -> float:
-    return np.linalg.norm(a - b)
-
-def inv_cos_dist(a: np.ndarray, b: np.ndarray, eps: float = 0.001) -> float:
-    a_norm, b_norm = np.linalg.norm(a, axis=0), np.linalg.norm(b, axis=0)
-    return (np.dot(a, b)) / ((a_norm * b_norm) + eps)
 
 class Ant:
     def __init__(self, vec: np.ndarray, pos: tuple, alpha: float, beta: float, delta: float, 
-                 eps: float = 0.01, move_base: float = 2.0):
+                 eps: float = 0.01, reinforce_exp: float = 3.0, ant_id: int = None, document: str = None):
         # initialize ant with the document vector
         self.vec = vec
         self.pos = pos
@@ -33,63 +27,98 @@ class Ant:
         self.alpha = alpha
         self.beta = beta
         self.delta = delta
-        self.move_base = move_base
+        self.reinforce_exp = reinforce_exp
 
         # initialize ant state and memory
         self.state = AntState.FOLLOW
         self.best_pheromone = 0
+        self.current_pheromone = 0
         self.best_loc = None
         self.age = 0
 
         # initialize distance function
         self.dist = inv_cos_dist
 
-    def get_move_diff(self, candidate: Tuple):
+        # initialize tracking
+        self.ant_id = ant_id
+        # initialize document
+        self.document = document
+
+    def get_move_diff(self, candidate: Tuple, width: int):
         if self.prev_pos is None:
             return 1.0
-        curr_move = tuple(candidate[i] - self.pos[i] for i in range(len(self.pos)))
-        prev_move = tuple(self.pos[i] - self.prev_pos[i] for i in range(len(self.pos)))
-        angle_diff = math.atan2(*curr_move) - math.atan2(*prev_move)
-        return self.move_base ** (-abs(angle_diff))
 
-    def decide_next_position(self, network: LatticeNetwork, q: float = 0.2, r: int = 1) -> bool:
+        # curr_move = tuple(candidate[i] - self.pos[i] for i in range(len(self.pos)))
+        # prev_move = tuple(self.pos[i] - self.prev_pos[i] for i in range(len(self.pos)))
+        # angle_diff = math.atan2(*curr_move) - math.atan2(*prev_move)
+        # return self.move_base ** (-abs(angle_diff))
+        curr_move = np.array(candidate) - np.array(self.pos)
+        prev_move = np.array(self.pos) - np.array(self.prev_pos)
+        if (np.abs(curr_move) > (width / 2)).any():
+            idx = (np.abs(curr_move) > (width / 2)).nonzero()[0]
+            inv_sgn = np.sign(curr_move[idx])
+            curr_move[idx] = inv_sgn * (width - np.abs(curr_move[idx]))
+        if (np.abs(prev_move) > (width / 2)).any():
+            idx = (np.abs(prev_move) > (width / 2)).nonzero()[0]
+            inv_sgn = np.sign(prev_move[idx])
+            prev_move[idx] = inv_sgn * (width - np.abs(prev_move[idx]))
+
+        return max(1 - (np.linalg.norm(curr_move - prev_move) / np.sqrt(8.0)), 0.5)
+
+    def calc_stop_threshold(self):
+        if self.best_pheromone == 0:
+            return self.pheromone_weighting(0.8)
+        return np.exp(-0.00893 * self.age) * self.best_pheromone 
+
+    def decide_next_position(self, network: LatticeNetwork, q: float = 0.2, r: int = 1, 
+                             warmup: bool = False, search: bool = False) -> bool:
         # compute neighbors and corresponding pheromone levels
         neighbors = network.get_neighborhood(*self.pos, radius=r, exclude_list=[self.pos])
         centroid_vecs = [network.get_centroid_pheromone_vec(r, c, [self.pos]) for r, c in neighbors]
         pheromone_vecs = [network.get_pheromone_vec(r, c) for r, c in neighbors]
-        edge_pheromones = [self.find_edge_pheromone(centroid_vecs[i], self.vec) for i in range(len(neighbors))]
-        pheromones = [self.pheromone_weighting(sigma) for sigma in edge_pheromones]
+        pheromones = [self.find_edge_pheromone(centroid_vecs[i], self.vec) for i in range(len(neighbors))]
+        # pheromones = [self.pheromone_weighting(sigma) for sigma in edge_pheromones]
 
         # compute current node pheromones
-        current_pheromone = self.find_edge_pheromone(network.get_centroid_pheromone_vec(*self.pos), 
-                                                     self.vec)
-        current_pheromone = self.pheromone_weighting(current_pheromone)
+        cent = network.get_centroid_pheromone_vec(*self.pos)
+        pher = network.get_pheromone_vec(*self.pos)
+        self.current_pheromone = self.find_edge_pheromone(cent, self.vec)
 
-        # enforce that pheromones consistently get better
-        pheromones = [p if p >= current_pheromone else 0 for p in pheromones]
+        # enforce that pheromones consistently get better if there is room to improve
+        if search and any([p >= self.current_pheromone for p in pheromones]):
+            pheromones = [p if p >= self.current_pheromone else 0 for p in pheromones]
 
-        # compute the pheremone scalars for the change in directions
-        move_diffs = [self.get_move_diff(n) for n in neighbors]
+        # compute the phermone scalars for the change in directions
+        move_diffs = [self.get_move_diff(n, network.pheromones.shape[0]) for n in neighbors]
         pheromones = [move_diffs[i] * p for i, p in enumerate(pheromones)]
 
-        if current_pheromone > self.best_pheromone:
-            self.best_pheromone = current_pheromone
+        if self.current_pheromone > self.best_pheromone:
+            self.best_pheromone = self.current_pheromone
+            self.best_loc = self.pos
+
+        # sum = np.sum(pheromones)
+        # # TODO: Figure out if stochastic stop is necessary
+        # if sum == 0:
+        #     probs = np.ones(len(pheromones)) / len(pheromones)
+        # else:
+        #     probs = np.array(pheromones) / np.sum(pheromones)
+
+        probs = np.array(pheromones) / np.sum(pheromones)
         
         stopped = False
         if rng.uniform() < q:
             # take the greedy option with probability q
             i = np.argmax(pheromones)
-            if pheromones[i] < current_pheromone:
+            if self.current_pheromone > pheromones[i]:
                 stopped = True
         else:
-            sum = np.sum(pheromones)
-            # TODO: Figure out if stochastic stop is necessary
-            if sum == 0:
-                probs = np.ones(len(pheromones)) / len(pheromones)
-            else:
-                probs = np.array(pheromones) / np.sum(pheromones)
+            
             i = int(self.roulette_wheel(probs))
-        if not stopped:
+
+        if self.current_pheromone > self.calc_stop_threshold() and rng.uniform() > probs[i]:
+            stopped = True
+
+        if not stopped or warmup:
             new_pos = neighbors[i]
             # TODO: Implement previous move tracking
             self.prev_pos = self.pos
@@ -115,7 +144,7 @@ class Ant:
     def get_update_reinforce(self, centroid_pheromone: np.ndarray) -> float:
         # TODO: do we need to divide by the number of variables in the node pheromone if all our vectors are normalized?
         d = self.dist(centroid_pheromone, self.vec, self.eps) / 2.0
-        return self.alpha * (1 - d)
+        return self.alpha * ((1 - d) ** self.reinforce_exp)
 
     # update the pheromone vector for the specified node (equation (11) in Fernandes et al.)
     def get_new_pheromone_vec(self, network: LatticeNetwork) -> np.ndarray:

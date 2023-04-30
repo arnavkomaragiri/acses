@@ -10,7 +10,7 @@ from sentence_transformers import SentenceTransformer
 from model import encode_sentences, load_model
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 
 np.random.seed(0)
 
@@ -36,13 +36,15 @@ def load_embeds(embed_file: str = "embeddings.pkl") -> Tuple[List[str], np.ndarr
         stored_data = pickle.load(fIn)
     return stored_data['categories'], stored_data['sentences'], stored_data['embeddings']
 
-def balance_dataset_idx(categories: List[str], num_sentences: int) -> np.ndarray:
+def balance_dataset_idx(categories: List[str], num_sentences: int, rng: Optional[np.random.Generator] = None) -> np.ndarray:
+    if rng is None:
+        rng = np.random
     unique_categories = list(set(categories))
     num_per_cat = num_sentences // len(unique_categories)
 
     np_cat = np.array(categories)
     idxs = [(np_cat == cat).nonzero()[0] for cat in unique_categories]
-    sel_idx = [idx[np.random.choice(len(idx), size=min(num_per_cat, len(idx)), replace=False)] for idx in idxs]
+    sel_idx = [idx[rng.choice(len(idx), size=min(num_per_cat, len(idx)), replace=False)] for idx in idxs]
     return np.concatenate(sel_idx)
 
 def get_category_idxs(categories: np.ndarray) -> Dict:
@@ -66,7 +68,8 @@ if __name__ == "__main__":
         print("Found Existing Embeddings")
         categories, dataset_sentences, embeddings = load_embeds(embed_file)
     else:
-        dataset_sentences: np.ndarray = np.array([f"{data['headline']} -- {data['short_description']}" for data in dataset])
+        # dataset_sentences: np.ndarray = np.array([f"{data['headline']} -- {data['short_description']}" for data in dataset])
+        dataset_sentences: np.ndarray = np.array([data['headline'] for data in dataset])
         categories: np.ndarray = np.array([data['category'] for data in dataset])
         urls: np.ndarray = np.array([data['link'] for data in dataset])
         
