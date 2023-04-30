@@ -11,6 +11,7 @@ def parse_args():
     args = argparse.ArgumentParser()
     args.add_argument("-w", "--width", type=int, default=100)
     args.add_argument("-n", "--num-ants", type=int, default=1000)
+    args.add_argument("-a", "--alpha", type=float, default=1)
     args.add_argument("-b", "--beta", type=float, default=32)
     args.add_argument("-d", "--delta", type=float, default=0.2)
     args.add_argument("-k", "--reinforce-exp", type=float, default=3)
@@ -72,7 +73,7 @@ if __name__ == '__main__':
         # initialize ant
         ant_vec = all_doc_vecs[doc_idx]
         loc = tuple(rng.choice(np.arange(args.width), 2))
-        ant = Ant(ant_vec, loc, 1, args.beta, args.delta, reinforce_exp=args.reinforce_exp, ant_id=i, document=all_docs[doc_idx])
+        ant = Ant(ant_vec, loc, args.alpha, args.beta, args.delta, reinforce_exp=args.reinforce_exp, ant_id=i, document=all_docs[doc_idx])
 
         data = ant_search(acses_network, ant, q=args.greedy_prob, max_steps=200)
         if data is not None:

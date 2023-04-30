@@ -22,6 +22,7 @@ def parse_args():
     args = argparse.ArgumentParser()
     args.add_argument("-w", "--width", type=int, default=100)
     args.add_argument("-n", "--num-ants", type=int, default=1000)
+    args.add_argument("-a", "--alpha", type=float, default=1)
     args.add_argument("-b", "--beta", type=float, default=32)
     args.add_argument("-d", "--delta", type=float, default=0.2)
     args.add_argument("-k", "--reinforce-exp", type=float, default=3)
@@ -43,14 +44,14 @@ def find_pheromone_map(ant, pheromones, vec):
     return diffs
 
 def organize_network(network: LatticeNetwork, ants: List[Tuple[int, Ant]], embeds: np.ndarray, sents: np.ndarray,
-                     num_steps: int, beta: float, delta: float, q: float, reinforce_exp: float, warmup_steps: int = 0,
+                     num_steps: int, alpha: float, beta: float, delta: float, q: float, reinforce_exp: float, warmup_steps: int = 0,
                      visualize: bool = False, enc: Optional[np.ndarray] = None):
     ant_locs = []
     count = 0 # args.num_ants
     total_ages = []
     frames = []
     # run ACO self organization
-    with tqdm(range(args.num_steps)) as t_iter:
+    with tqdm(range(num_steps)) as t_iter:
         for i in t_iter:
             rng.shuffle(ants)
             sum_age = 0
@@ -70,11 +71,12 @@ def organize_network(network: LatticeNetwork, ants: List[Tuple[int, Ant]], embed
                     count = (count + 1) % len(ants)
                     # if ant.best_loc is not None and ant.pos != ant.best_loc:
                     #     network.add_edge(ant.pos, ant.best_loc)
+                    #     # network.trim_neighbors(*ant.pos)
                     #     ant.pos = ant.best_loc
                     #     network.deposit_pheromone_delta(pheromone_update, neighborhood_func, *ant.best_loc)
                     network.deposit_document(*ant.pos, ant.document, ant.vec)
                     total_ages += [ant.age]
-                    ants[u] = (j, Ant(vec, loc, 1, beta, delta, reinforce_exp=reinforce_exp, ant_id=k, document=doc))
+                    ants[u] = (j, Ant(vec, loc, alpha, beta, delta, reinforce_exp=reinforce_exp, ant_id=k, document=doc))
                     status[j] = False
                 else:
                     status[j] = s
@@ -82,6 +84,7 @@ def organize_network(network: LatticeNetwork, ants: List[Tuple[int, Ant]], embed
                 ages += [ant.age]
             network.evaporate_pheromones()
             if i % 50 == 49:
+                # network.evolve_pheromones()
                 network.erode_network(min_dist=0.7)
             norms = np.linalg.norm(network.pheromones, axis=-1)
             best_matches = [ant.current_pheromone for _, ant in ants]
@@ -94,11 +97,11 @@ def organize_network(network: LatticeNetwork, ants: List[Tuple[int, Ant]], embed
         return network, ants, ages, total_ages, frames 
     return network, ants, ages, total_ages
 
-def init_ant(network: LatticeNetwork, vec: np.ndarray, beta: float, delta: float, doc: str = "", verbose: bool = False, rng = None) -> Ant:
+def init_ant(network: LatticeNetwork, vec: np.ndarray, alpha: float, beta: float, delta: float, doc: str = "", verbose: bool = False, rng = None) -> Ant:
     if rng is None:
         rng = np.random
     new_pos = tuple(rng.choice(np.arange(network.documents.shape[0]), 2))
-    new_ant = Ant(vec, new_pos, 1, beta, delta, document=doc)
+    new_ant = Ant(vec, new_pos, alpha, beta, delta, document=doc)
     start_match = new_ant.find_edge_pheromone(network.get_pheromone_vec(*new_ant.pos), new_ant.vec)
     if verbose:
         print(f"Start Position: {new_ant.pos}, Start Match: {start_match}")
@@ -162,7 +165,7 @@ if __name__ == "__main__":
     for i in range(args.num_ants):
         ant_vec = embeds[i]
         loc = tuple(rng.choice(np.arange(args.width), 2))
-        ants += [(i, Ant(ant_vec, loc, 1, args.beta, args.delta, reinforce_exp=args.reinforce_exp, ant_id=i, document=sents[i]))]
+        ants += [(i, Ant(ant_vec, loc, args.alpha, args.beta, args.delta, reinforce_exp=args.reinforce_exp, ant_id=i, document=sents[i]))]
         status += [False]
 
     # ant_locs = []
@@ -215,17 +218,17 @@ if __name__ == "__main__":
     #         #     break
     if args.export_video:
         network, ants, ages, total_ages, frames = organize_network(network, ants, embeds, sents, args.num_steps, 
-                                                                   args.beta, args.delta, args.greedy_prob, args.reinforce_exp,
+                                                                   args.alpha, args.beta, args.delta, args.greedy_prob, args.reinforce_exp,
                                                                    args.warmup_steps, args.export_video, enc)
         ani = animation.ArtistAnimation(fig, frames, interval=50, blit=True)
         ani.save("animation.mp4")
         plt.show()
     else:
         network, ants, ages, total_ages = organize_network(network, ants, embeds, sents, args.num_steps, 
-                                                           args.beta, args.delta, args.greedy_prob, args.reinforce_exp,
+                                                           args.alpha, args.beta, args.delta, args.greedy_prob, args.reinforce_exp,
                                                            args.warmup_steps)
 
-    total_ages += ages
+    # total_ages += ages
     plt.hist(total_ages, bins=np.ptp(total_ages)+1)
     plt.title("Ant Age Histogram")
     plt.show()
@@ -267,7 +270,7 @@ if __name__ == "__main__":
     ax[1].imshow(diffs2)
     plt.show()
 
-    new_ant = init_ant(network, emb, args.beta, args.delta, doc=sentence, verbose=True)
+    new_ant = init_ant(network, emb, args.alpha, args.beta, args.delta, doc=sentence, verbose=True)
     new_ant, docs, pos_seq, pheromone_seq = ant_search(network, new_ant, args.greedy_prob)
 
     print("Search Results: ")

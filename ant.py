@@ -109,10 +109,9 @@ class Ant:
         if rng.uniform() < q:
             # take the greedy option with probability q
             i = np.argmax(pheromones)
-            if self.current_pheromone > pheromones[i]:
-                stopped = True
+            # if self.current_pheromone > pheromones[i]:
+                # stopped = True
         else:
-            
             i = int(self.roulette_wheel(probs))
 
         if self.current_pheromone > self.calc_stop_threshold() and rng.uniform() > probs[i]:
@@ -163,7 +162,7 @@ class Ant:
 
     def get_neighborhood_func(self):
         def func(dist: float) -> float:
-            return (0.25) ** dist
+            return (0.25) ** (dist)
         return func
 
 
