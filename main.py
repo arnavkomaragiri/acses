@@ -36,6 +36,7 @@ def parse_args():
     args.add_argument("-e", "--export-video", action='store_true')
     args.add_argument("-l", "--small-world", action='store_true')
     args.add_argument("-u", "--num-rewires", type=int, default=1)
+    args.add_argument("-g", "--geometry", type=str, choices=["euclidean", "graph"], default="euclidean")
     return args.parse_args()
 
 def find_pheromone_map(ant, pheromones, vec):
@@ -47,8 +48,9 @@ def find_pheromone_map(ant, pheromones, vec):
 
 def organize_network(network: LatticeNetwork, ants: List[Tuple[int, Ant]], embeds: np.ndarray, sents: np.ndarray,
                      num_steps: int, alpha: float, beta: float, delta: float, q: float, reinforce_exp: float, 
-                     num_rewires: int = 1, warmup_steps: int = 0, visualize: bool = False, enc: Optional[np.ndarray] = None):
-    count = args.num_ants
+                     num_rewires: int = 1, warmup_steps: int = 0, visualize: bool = False, enc: Optional[np.ndarray] = None, 
+                     geometry: str = "euclidean"):
+    count = 0
     total_ages = []
     frames = []
     # run ACO self organization
@@ -69,7 +71,8 @@ def organize_network(network: LatticeNetwork, ants: List[Tuple[int, Ant]], embed
                     vec = embeds[count]
                     doc = sents[count]
                     k = count
-                    count = (count + 1) % len(embeds)
+                    # count = (count + 1) % len(embeds)
+                    count = (count + 1) % len(ants)
                     # count += 1
                     # if ant.best_loc is not None and ant.pos != ant.best_loc:
                     #     network.add_edge(ant.pos, ant.best_loc)
@@ -86,7 +89,7 @@ def organize_network(network: LatticeNetwork, ants: List[Tuple[int, Ant]], embed
                     network.deposit_pheromone_delta(pheromone_update, neighborhood_func, *ant.pos)
                     # update age statistics and reinitialize ant
                     total_ages += [ant.age]
-                    ants[u] = (j, Ant(vec, loc, alpha, beta, delta, reinforce_exp=reinforce_exp, ant_id=k, document=doc))
+                    ants[u] = (j, Ant(vec, loc, alpha, beta, delta, reinforce_exp=reinforce_exp, ant_id=k, document=doc, geometry=geometry))
                     status[j] = False
                 else:
                     status[j] = s
@@ -95,7 +98,7 @@ def organize_network(network: LatticeNetwork, ants: List[Tuple[int, Ant]], embed
             network.evaporate_pheromones()
             if i % 50 == 49:
                 # network.evolve_pheromones()
-                network.erode_network(min_dist=0.5)
+                network.erode_network(min_dist=0.6)
                 network.global_st_rewire(m=num_rewires)
             norms = np.linalg.norm(network.pheromones, axis=-1)
             best_matches = [ant.current_pheromone for _, ant in ants]
@@ -108,11 +111,11 @@ def organize_network(network: LatticeNetwork, ants: List[Tuple[int, Ant]], embed
         return network, ants, ages, total_ages, frames 
     return network, ants, ages, total_ages
 
-def init_ant(network: LatticeNetwork, vec: np.ndarray, alpha: float, beta: float, delta: float, doc: str = "", verbose: bool = False, rng = None) -> Ant:
+def init_ant(network: LatticeNetwork, vec: np.ndarray, alpha: float, beta: float, delta: float, doc: str = "", verbose: bool = False, rng = None, geometry="euclidean") -> Ant:
     if rng is None:
         rng = np.random
     new_pos = tuple(rng.choice(np.arange(network.documents.shape[0]), 2))
-    new_ant = Ant(vec, new_pos, alpha, beta, delta, document=doc)
+    new_ant = Ant(vec, new_pos, alpha, beta, delta, document=doc, geometry=geometry)
     start_match = new_ant.find_edge_pheromone(network.get_pheromone_vec(*new_ant.pos), new_ant.vec)
     if verbose:
         print(f"Start Position: {new_ant.pos}, Start Match: {start_match}")
@@ -204,13 +207,14 @@ if __name__ == "__main__":
     else:
         network = LatticeNetwork((args.width, args.width), embeds.shape[-1], args.evaporation_factor, 
                                  rng=rng, centroid_radius=args.centroid_radius, zeros=args.zeros)
+    network.smooth_init_pheromones(0.5, 0.1)
     existing_locs = set()
     ants = []
     status = []
     for i in range(args.num_ants):
         ant_vec = embeds[i]
         loc = tuple(rng.choice(np.arange(args.width), 2))
-        ants += [(i, Ant(ant_vec, loc, args.alpha, args.beta, args.delta, reinforce_exp=args.reinforce_exp, ant_id=i, document=sents[i]))]
+        ants += [(i, Ant(ant_vec, loc, args.alpha, args.beta, args.delta, reinforce_exp=args.reinforce_exp, ant_id=i, document=sents[i], geometry=args.geometry))]
         status += [False]
 
     # ant_locs = []
@@ -264,14 +268,16 @@ if __name__ == "__main__":
     if args.export_video:
         network, ants, ages, total_ages, frames = organize_network(network, ants, embeds, sents, args.num_steps, 
                                                                    args.alpha, args.beta, args.delta, args.greedy_prob, args.reinforce_exp,
-                                                                   num_rewires=args.num_rewires, warmup_steps=args.warmup_steps, visualize=args.export_video, enc=enc)
+                                                                   num_rewires=args.num_rewires, warmup_steps=args.warmup_steps, visualize=args.export_video, enc=enc,
+                                                                   geometry=args.geometry)
         ani = animation.ArtistAnimation(fig, frames, interval=50, blit=True)
         ani.save("animation.mp4")
         plt.show()
     else:
         network, ants, ages, total_ages = organize_network(network, ants, embeds, sents, args.num_steps, 
                                                            args.alpha, args.beta, args.delta, args.greedy_prob, args.reinforce_exp,
-                                                           num_rewires=args.num_rewires, warmup_steps=args.warmup_steps)
+                                                           num_rewires=args.num_rewires, warmup_steps=args.warmup_steps,
+                                                           geometry=args.geometry)
 
     # total_ages += ages
     plt.hist(total_ages, bins=np.ptp(total_ages)+1)
@@ -307,24 +313,28 @@ if __name__ == "__main__":
     ax[1].imshow(diffs2)
     plt.show()
 
-    new_ant = init_ant(network, emb, args.alpha, args.beta, args.delta, doc=sentence, verbose=True)
-    new_ant, docs, pos_seq, pheromone_seq = ant_search(network, new_ant, args.greedy_prob)
+    new_ant = init_ant(network, emb, args.alpha, args.beta, args.delta, doc=sentence, verbose=True, geometry=args.geometry)
+    data = ant_search(network, new_ant, args.greedy_prob, max_steps=200)
+    if data is not None:
+        new_ant, docs, pos_seq, pheromone_seq = data
 
-    print("Search Results: ")
-    for d in docs:
-        print(d)
+        print("Search Results: ")
+        for d in docs:
+            print(d)
 
-    final_match = new_ant.find_edge_pheromone(network.get_pheromone_vec(*new_ant.pos), new_ant.vec)
-    print(f"Path Length: {len(pos_seq)}")
-    print(f"Final Position: {new_ant.pos}, Final Match: {final_match}")
+        final_match = new_ant.find_edge_pheromone(network.get_pheromone_vec(*new_ant.pos), new_ant.vec)
+        print(f"Path Length: {len(pos_seq)}")
+        print(f"Final Position: {new_ant.pos}, Final Match: {final_match}")
 
-    path_map = np.zeros((args.width, args.width))
-    path_diff = find_pheromone_map(new_ant, network.pheromones, new_ant.vec)
-    for i, (r, c) in enumerate(pos_seq):
-        p = new_ant.find_edge_pheromone(network.pheromones[r, c], new_ant.vec)
-        path_map[r, c] = p / np.max(path_diff)
-    plt.imshow(path_map)
-    plt.show()
+        path_map = np.zeros((args.width, args.width))
+        path_diff = find_pheromone_map(new_ant, network.pheromones, new_ant.vec)
+        for i, (r, c) in enumerate(pos_seq):
+            p = new_ant.find_edge_pheromone(network.pheromones[r, c], new_ant.vec)
+            path_map[r, c] = p / np.max(path_diff)
+        plt.imshow(path_map)
+        plt.show()
+    else:
+        print("Search Failed")
 
     out_path = input("Input Output Path: ")
     try:

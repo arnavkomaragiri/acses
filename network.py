@@ -66,7 +66,60 @@ class LatticeNetwork():
                         if a == 0 and b == 0:
                             continue 
                         self.neighbors[row, col] += [((row + a) % self.neighbors.shape[0], (col + b) % self.neighbors.shape[1])]
-                    
+
+    def mean_with_mutation(self, vecs: List[np.ndarray], dtheta: float) -> np.ndarray:
+        mean_vec = np.mean(vecs, axis=0)
+        mean_vec = mean_vec / (np.linalg.norm(mean_vec) + 0.00001)
+
+        rand_vec = self.rng.normal(size=mean_vec.shape)
+        ortho_vec = rand_vec - ((np.dot(mean_vec, rand_vec) / np.dot(mean_vec, mean_vec)) * mean_vec)
+        ortho_vec = ortho_vec / np.linalg.norm(ortho_vec)
+
+        theta = dtheta * self.rng.random()
+        gamma, delta = np.cos(theta), np.sin(theta)
+        return (gamma * mean_vec) + (delta * ortho_vec)
+
+    def smooth_init_pheromones(self, populate_pct: float, dtheta: float, k: float = 0.3):
+        self.pheromones = np.zeros_like(self.pheromones)
+        num_populate = int(populate_pct * reduce(lambda a, b: a * b, self.neighbors.shape))
+        # initialize pos set
+        pos_set = set()
+        norms = np.zeros((self.pheromones.shape[0], self.pheromones.shape[1]), dtype=float)
+        for _ in range(num_populate):
+            # generate new position without repeated elements
+            pos = tuple(self.rng.choice(self.neighbors.shape[0], 2))
+            if pos in pos_set:
+                continue
+            # add position to pos set and randomly create vector
+            pos_set.add(pos)
+            r, c = pos
+            norms[r, c] = 1.0
+            vec = self.rng.normal(size=self.pheromones.shape[-1])
+            self.pheromones[r, c] = vec / np.linalg.norm(vec)
+        
+        # convert pos set to open list
+        open_list = reduce(lambda a, b: a + b, [self.neighbors[r, c] for r, c in pos_set])
+        # run BFS to smoothly populate pheromones
+        while len(open_list) != 0:
+            # pop first entry off queue and get neighbors
+            open_pos = open_list.pop(0)
+            r, c = open_pos
+            neighbors = self.neighbors[r, c]
+
+            # get all nonzero neighboring pheromone vectors
+            vecs = [self.pheromones[a, b] for a, b in neighbors if (a, b) in pos_set]
+
+            # if there are no empty neighbors to populate, just break out of this iteration
+            if len(vecs) == 0:
+                continue
+
+            # populate new pheromone via mean with mutation algo
+            vec = self.mean_with_mutation(vecs, dtheta)
+            self.pheromones[r, c] = self.mean_with_mutation(vecs, dtheta)
+
+            pos_set.add(open_pos)
+            open_list += [n for n in neighbors if n not in pos_set]
+
     def get_pheromone_vec(self, row: Union[int, np.ndarray], col: Union[int, np.ndarray]) -> np.ndarray:
         return self.pheromones[row, col]
 
@@ -184,6 +237,7 @@ class LatticeNetwork():
             for r, c in neighbors:
                 centroid = self.get_centroid_pheromone_vec(r, c, [(row, col)])
                 node = self.get_pheromone_vec(r, c)
+                # dist = max(abs(row - r), abs(col - c))
                 dist = float(np.sqrt((row - r) ** 2 + (col - c) ** 2))
                 self.pheromones[r, c] = pheromone_func(centroid, node, neighborhood_func(dist))
 

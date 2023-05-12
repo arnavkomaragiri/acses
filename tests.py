@@ -23,6 +23,7 @@ def parse_args():
     args.add_argument("-q", "--greedy-prob", type=float, default=0.2)
     args.add_argument("-m", "--warmup-steps", type=int, default=50)
     args.add_argument("-e", "--export-video", action='store_true')
+    args.add_argument("-g", "--geometry", type=str, choices=["euclidean", "graph"], default="euclidean")
     return args.parse_args()
 
 if __name__ == '__main__':
@@ -81,7 +82,7 @@ if __name__ == '__main__':
         # initialize ant
         ant_vec = all_doc_vecs[doc_idx]
         loc = tuple(rng.choice(np.arange(args.width), 2))
-        ant = Ant(ant_vec, loc, args.alpha, args.beta, args.delta, reinforce_exp=args.reinforce_exp, ant_id=0, document=all_docs[doc_idx])
+        ant = Ant(ant_vec, loc, args.alpha, args.beta, args.delta, reinforce_exp=args.reinforce_exp, ant_id=0, document=all_docs[doc_idx], geometry=args.geometry)
 
         data = ant_search(acses_network, ant, q=args.greedy_prob, max_steps=200)
         if data is not None:

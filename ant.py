@@ -16,12 +16,14 @@ AntState = Enum('AntState', ['FOLLOW', 'RECOVER', 'STOPPED'])
 
 class Ant:
     def __init__(self, vec: np.ndarray, pos: tuple, alpha: float, beta: float, delta: float, 
-                 eps: float = 0.01, reinforce_exp: float = 3.0, ant_id: int = None, document: str = None):
+                 eps: float = 0.01, reinforce_exp: float = 3.0, ant_id: int = None, document: str = None,
+                 geometry: str = "euclidean"):
         # initialize ant with the document vector
         self.vec = vec
         self.pos = pos
         self.prev_pos = None
         self.eps = eps
+        self.geometry = geometry
 
         # initialize hyperparams
         self.alpha = alpha
@@ -48,28 +50,33 @@ class Ant:
         self.document = document
 
     def get_move_diff(self, candidate: Tuple, width: int):
-        if self.prev_pos is None:
-            return 1.0
+        if self.geometry == "euclidean":
+            if self.prev_pos is None:
+                return 1.0
         
-        curr_move = np.array(candidate) - np.array(self.pos)
-        prev_move = np.array(self.pos) - np.array(self.prev_pos)
-        if (np.abs(curr_move) > (width / 2)).any():
-            idx = (np.abs(curr_move) > (width / 2)).nonzero()[0]
-            inv_sgn = np.sign(curr_move[idx])
-            curr_move[idx] = inv_sgn * (width - np.abs(curr_move[idx]))
-        if (np.abs(prev_move) > (width / 2)).any():
-            idx = (np.abs(prev_move) > (width / 2)).nonzero()[0]
-            inv_sgn = np.sign(prev_move[idx])
-            prev_move[idx] = inv_sgn * (width - np.abs(prev_move[idx]))
+            curr_move = np.array(candidate) - np.array(self.pos)
+            prev_move = np.array(self.pos) - np.array(self.prev_pos)
+            if (np.abs(curr_move) > (width / 2)).any():
+                idx = (np.abs(curr_move) > (width / 2)).nonzero()[0]
+                inv_sgn = np.sign(curr_move[idx])
+                curr_move[idx] = inv_sgn * (width - np.abs(curr_move[idx]))
+            if (np.abs(prev_move) > (width / 2)).any():
+                idx = (np.abs(prev_move) > (width / 2)).nonzero()[0]
+                inv_sgn = np.sign(prev_move[idx])
+                prev_move[idx] = inv_sgn * (width - np.abs(prev_move[idx]))
         
-        curr_move = curr_move / (np.linalg.norm(curr_move) + 0.0001)
-        prev_move = prev_move / (np.linalg.norm(prev_move) + 0.0001)
-        angle = np.arccos(np.clip(np.dot(curr_move, prev_move), -1.0, 1.0)) 
+            curr_move = curr_move / (np.linalg.norm(curr_move) + 0.0001)
+            prev_move = prev_move / (np.linalg.norm(prev_move) + 0.0001)
+            angle = np.arccos(np.clip(np.dot(curr_move, prev_move), -1.0, 1.0)) 
 
-        return max(1 - (angle / np.pi), 0.5)
+            return max(1 - (angle / np.pi), 0.5)
+        elif self.geometry == "graph":
+            num_visited = self.pos_seq.count(candidate)
+            penalty = 2 ** (-num_visited)
+            return penalty
 
     def decide_next_position(self, network: LatticeNetwork, q: float = 0.2, r: int = 1, 
-                             warmup: bool = False, search: bool = False, trim_pct: float = 0.0) -> bool:
+                             warmup: bool = False, search: bool = False, trim_pct: float = 0.0, move_diff: bool = True) -> bool:
         # compute neighbors and corresponding pheromone levels
         neighbors = network.get_neighborhood(*self.pos, radius=r, exclude_list=[self.pos])
         centroid_vecs = [network.get_centroid_pheromone_vec(r, c, [self.pos]) for r, c in neighbors]
@@ -96,8 +103,9 @@ class Ant:
                 pheromones[i] = 0
 
         # compute the phermone scalars for the change in directions
-        move_diffs = [self.get_move_diff(n, network.pheromones.shape[0]) for n in neighbors]
-        pheromones = [move_diffs[i] * p for i, p in enumerate(pheromones)]
+        if move_diff:
+            move_diffs = [self.get_move_diff(n, network.pheromones.shape[0]) for n in neighbors]
+            pheromones = [move_diffs[i] * p for i, p in enumerate(pheromones)]
         pheromones += [self.current_pheromone]
 
         if self.current_pheromone > self.best_pheromone:
