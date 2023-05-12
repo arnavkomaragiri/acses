@@ -1,15 +1,17 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import argparse
-from network import LatticeNetwork, inv_cos_dist
-from ant import Ant
+from network import HierarchicalLattice, inv_cos_dist
+from ant import HierarchicalAnt
 from model import load_model
 from functools import reduce
-from main import ant_search
+from hierarchy_main import ant_search
 
 def parse_args():
     args = argparse.ArgumentParser()
-    args.add_argument("-w", "--width", type=int, default=100)
+    args.add_argument("-w", "--width", type=int, default=3)
+    args.add_argument("-l", "--scale", type=int, default=3)
+    args.add_argument("-y", "--depth", type=int, default=4)
     args.add_argument("-n", "--num-ants", type=int, default=1000)
     args.add_argument("-a", "--alpha", type=float, default=1)
     args.add_argument("-b", "--beta", type=float, default=32)
@@ -21,9 +23,10 @@ def parse_args():
     args.add_argument("-r", "--centroid-radius", type=int, default=1)
     args.add_argument("-z", "--zeros", action='store_true')
     args.add_argument("-q", "--greedy-prob", type=float, default=0.2)
-    args.add_argument("-m", "--warmup-steps", type=int, default=50)
+    args.add_argument("-m", "--warmup", action='store_true')
     args.add_argument("-e", "--export-video", action='store_true')
     return args.parse_args()
+
 
 if __name__ == '__main__':
     rng = np.random.default_rng(seed=0)
@@ -31,28 +34,26 @@ if __name__ == '__main__':
 
     # import network and its documents from pkl
     path = input("Input Network Path: ")
-    acses_network = LatticeNetwork.from_pickle(path)
-    all_docs = np.vstack(reduce(lambda a,b: a+b, acses_network.documents.flatten())).flatten()
-    all_doc_vecs = reduce(lambda a,b: a+b, acses_network.doc_vecs.flatten())
+    acses_network = HierarchicalLattice.from_pickle(path)
+    all_docs = np.vstack(reduce(lambda a,b: a+b, acses_network.levels[-1].documents.flatten())).flatten()
+    all_doc_vecs = reduce(lambda a,b: a+b, acses_network.levels[-1].doc_vecs.flatten())
 
     model = load_model()
 
-    random_placements = np.random.randint(low=0, high=args.width, size=(all_docs.shape[0], 2))
+    # random_placements = np.random.randint(low=0, high=args.width, size=(all_docs.shape[0], 2))
 
     # taken from https://stackoverflow.com/questions/43483663/how-do-i-make-a-grid-of-empty-lists-in-numpy-that-accepts-appending#:~:text=m%20%3D%20np.empty((12%2C%2012)%2C%20dtype%3Dobject)%0Afor%20i%20in%20np.ndindex(m.shape)%3A%20m%5Bi%5D%20%3D%20%5B%5D
     basic_network_docs = np.empty((args.width, args.width), dtype=object)
-    for i in np.ndindex(basic_network_docs.shape): basic_network_docs[i] = []
+    # for i in np.ndindex(basic_network_docs.shape): basic_network_docs[i] = []
 
-    basic_network_vecs = np.ndarray((args.width,args.width), dtype=list)
-    for i in np.ndindex(basic_network_vecs.shape): basic_network_vecs[i] = []
+    # basic_network_vecs = np.ndarray((args.width,args.width), dtype=list)
+    # for i in np.ndindex(basic_network_vecs.shape): basic_network_vecs[i] = []
 
-    for i in range(all_docs.shape[0]):
-        basic_network_docs[random_placements[i,0]][random_placements[i,1]].append(all_docs[i])
-        basic_network_vecs[random_placements[i,0]][random_placements[i,1]].append(all_doc_vecs[i])
-
-    # basic_network_docs = acses_network.documents
-    # basic_network_vecs = acses_network.doc_vecs
-
+    # for i in range(all_docs.shape[0]):
+    #     basic_network_docs[random_placements[i,0]][random_placements[i,1]].append(all_docs[i])
+    #     basic_network_vecs[random_placements[i,0]][random_placements[i,1]].append(all_doc_vecs[i])
+    basic_network_docs = acses_network.levels[-1].documents
+    basic_network_vecs = acses_network.levels[-1].doc_vecs
 
     doc_idxs = []
 
@@ -67,28 +68,24 @@ if __name__ == '__main__':
     acses_mins = []
     acses_maxs = []
     acses_matches = []
-
-    idxs = np.arange(all_docs.shape[0])
-    np.random.shuffle(idxs)
     # sample N documents and compare ACSeS vs random allocation 
-    # while len(doc_idxs) < args.num_ants:
-    for doc_idx in idxs:
+    while len(doc_idxs) < args.num_ants:
         # get a random document index
-        # doc_idx = np.random.randint(low=0, high=all_docs.shape[0])
+        doc_idx = np.random.randint(low=0, high=all_docs.shape[0])
         doc_idxs += [doc_idx]
 
         # using ACSeS
         # initialize ant
         ant_vec = all_doc_vecs[doc_idx]
         loc = tuple(rng.choice(np.arange(args.width), 2))
-        ant = Ant(ant_vec, loc, args.alpha, args.beta, args.delta, reinforce_exp=args.reinforce_exp, ant_id=0, document=all_docs[doc_idx])
+        ant = HierarchicalAnt(ant_vec, loc, args.alpha, args.beta, args.delta, reinforce_exp=args.reinforce_exp, ant_id=0, document=all_docs[doc_idx])
 
         data = ant_search(acses_network, ant, q=args.greedy_prob, max_steps=200)
         if data is not None:
             ant, acses_docs, pos_seq, pher_seq = data
             # get the vectors stored in the ACSeS-selected node
             acses_node_idx = pos_seq[-1]
-            acses_vecs = acses_network.doc_vecs[acses_node_idx[0]][acses_node_idx[1]]
+            acses_vecs = acses_network.levels[-1].doc_vecs[acses_node_idx[0]][acses_node_idx[1]]
 
             # calculate the inverse cosine distance of the current doc with all docs in the randomly selected node
             acses_dists = [inv_cos_dist(all_doc_vecs[doc_idx], vec) for vec in acses_vecs]
@@ -106,7 +103,7 @@ if __name__ == '__main__':
         # baseline inference
         tried_set = set()
         while len(tried_set) < l:
-            baseline_node_idx = np.random.randint(low=0, high=args.width, size=2)
+            baseline_node_idx = np.random.randint(low=0, high=acses_network.levels[-1].documents.shape[0], size=2)
             if tuple(baseline_node_idx) in tried_set:
                 continue
             tried_set.add(tuple(baseline_node_idx))

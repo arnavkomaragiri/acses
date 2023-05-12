@@ -4,10 +4,10 @@ import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 
-from network import LatticeNetwork, euclidean_dist, ip_dist, inv_cos_dist
+from network import LatticeNetwork, HierarchicalLattice, euclidean_dist, ip_dist, inv_cos_dist
 from enum import Enum
 from tqdm import tqdm
-from typing import Tuple, Callable
+from typing import Tuple, Callable, List
 
 rng = np.random.default_rng(seed=0)
 
@@ -35,9 +35,12 @@ class Ant:
         self.current_pheromone = 0
         self.best_loc = None
         self.age = 0
+        self.pos_seq = []
+        self.pher_seq = []
+        self.deg_seq = []
 
         # initialize distance function
-        self.dist = inv_cos_dist
+        self.dist = ip_dist
 
         # initialize tracking
         self.ant_id = ant_id
@@ -47,11 +50,7 @@ class Ant:
     def get_move_diff(self, candidate: Tuple, width: int):
         if self.prev_pos is None:
             return 1.0
-
-        # curr_move = tuple(candidate[i] - self.pos[i] for i in range(len(self.pos)))
-        # prev_move = tuple(self.pos[i] - self.prev_pos[i] for i in range(len(self.pos)))
-        # angle_diff = math.atan2(*curr_move) - math.atan2(*prev_move)
-        # return self.move_base ** (-abs(angle_diff))
+        
         curr_move = np.array(candidate) - np.array(self.pos)
         prev_move = np.array(self.pos) - np.array(self.prev_pos)
         if (np.abs(curr_move) > (width / 2)).any():
@@ -62,46 +61,48 @@ class Ant:
             idx = (np.abs(prev_move) > (width / 2)).nonzero()[0]
             inv_sgn = np.sign(prev_move[idx])
             prev_move[idx] = inv_sgn * (width - np.abs(prev_move[idx]))
+        
+        curr_move = curr_move / (np.linalg.norm(curr_move) + 0.0001)
+        prev_move = prev_move / (np.linalg.norm(prev_move) + 0.0001)
+        angle = np.arccos(np.clip(np.dot(curr_move, prev_move), -1.0, 1.0)) 
 
-        return max(1 - (np.linalg.norm(curr_move - prev_move) / np.sqrt(8.0)), 0.5)
-
-    def calc_stop_threshold(self):
-        if self.best_pheromone == 0:
-            return self.pheromone_weighting(0.8)
-        return np.exp(-0.00893 * self.age) * self.best_pheromone 
+        return max(1 - (angle / np.pi), 0.5)
 
     def decide_next_position(self, network: LatticeNetwork, q: float = 0.2, r: int = 1, 
-                             warmup: bool = False, search: bool = False) -> bool:
+                             warmup: bool = False, search: bool = False, trim_pct: float = 0.0) -> bool:
         # compute neighbors and corresponding pheromone levels
         neighbors = network.get_neighborhood(*self.pos, radius=r, exclude_list=[self.pos])
         centroid_vecs = [network.get_centroid_pheromone_vec(r, c, [self.pos]) for r, c in neighbors]
-        pheromone_vecs = [network.get_pheromone_vec(r, c) for r, c in neighbors]
         pheromones = [self.find_edge_pheromone(centroid_vecs[i], self.vec) for i in range(len(neighbors))]
-        # pheromones = [self.pheromone_weighting(sigma) for sigma in edge_pheromones]
 
         # compute current node pheromones
         cent = network.get_centroid_pheromone_vec(*self.pos)
-        pher = network.get_pheromone_vec(*self.pos)
         self.current_pheromone = self.find_edge_pheromone(cent, self.vec)
+
+        # scale decisions based on document count heatmaps
+        if network.count_heatmap is not None:
+            dists = [self.dist(centroid_vecs[i], self.vec) for i in range(len(neighbors))]
+            count_heats = [network.count_heatmap[r, c] for r, c in neighbors]
+            count_mults = [h ** (0.5 * (2 - d)) for h, d in zip(count_heats, dists)]
+            pheromones = [count_mults[i] * p for i, p in enumerate(pheromones)]
 
         # enforce that pheromones consistently get better if there is room to improve
         if search and any([p >= self.current_pheromone for p in pheromones]):
             pheromones = [p if p >= self.current_pheromone else 0 for p in pheromones]
+        
+        if trim_pct != 0.0:
+            for _ in range(int(trim_pct * len(pheromones))):
+                i = np.argmin(pheromones)
+                pheromones[i] = 0
 
         # compute the phermone scalars for the change in directions
         move_diffs = [self.get_move_diff(n, network.pheromones.shape[0]) for n in neighbors]
         pheromones = [move_diffs[i] * p for i, p in enumerate(pheromones)]
+        pheromones += [self.current_pheromone]
 
         if self.current_pheromone > self.best_pheromone:
             self.best_pheromone = self.current_pheromone
             self.best_loc = self.pos
-
-        # sum = np.sum(pheromones)
-        # # TODO: Figure out if stochastic stop is necessary
-        # if sum == 0:
-        #     probs = np.ones(len(pheromones)) / len(pheromones)
-        # else:
-        #     probs = np.array(pheromones) / np.sum(pheromones)
 
         probs = np.array(pheromones) / np.sum(pheromones)
         
@@ -109,13 +110,14 @@ class Ant:
         if rng.uniform() < q:
             # take the greedy option with probability q
             i = np.argmax(pheromones)
-            # if self.current_pheromone > pheromones[i]:
-                # stopped = True
+            j = np.argmax(pheromones[:-1])
         else:
             i = int(self.roulette_wheel(probs))
+            j = int(self.roulette_wheel(pheromones[:-1] / np.sum(pheromones[:-1])))
 
-        if self.current_pheromone > self.calc_stop_threshold() and rng.uniform() > probs[i]:
-            stopped = True
+        stopped = (i == len(pheromones) - 1)
+        if stopped:
+            i = j
 
         if not stopped or warmup:
             new_pos = neighbors[i]
@@ -123,11 +125,48 @@ class Ant:
             self.prev_pos = self.pos
             self.pos = new_pos
             self.age += 1
-        return stopped
+
+            self.pos_seq += [self.pos]
+            self.pher_seq += [self.current_pheromone]
+            self.deg_seq += [len(neighbors)]
+        return stopped and not warmup
+
+    def get_rewire_pos(self, network: LatticeNetwork, m: int, r: int = 1) -> List[Tuple[int, int]]:
+        # find gateway position
+        gateway_pos = self.sample_gateway_pos()
+        # get neighborhood and corresponding pheromones
+        gateway_neighborhood = network.get_neighborhood(*gateway_pos, r)
+        gateway_centroids = [network.get_centroid_pheromone_vec(r, c) for r, c in gateway_neighborhood]
+        pheromones = [self.find_edge_pheromone(c, self.vec) for c in gateway_centroids] 
+        # convert pheromones to probabilities
+        probs = np.array(pheromones) / np.sum(pheromones)
+        idxs = self.roulette_wheel(probs, num_samples=m, replace=False)
+        return [gateway_neighborhood[i] for i in idxs]
+
+    def get_local_rewire_pos(self, network: LatticeNetwork, m: int, r: int = 1):
+        gateways = network.get_neighborhood(*self.pos, r)
+        degs = [len(network.neighbors[a, b]) for a, b in gateways]
+        probs = np.array(degs) / np.sum(degs)
+        i = int(self.roulette_wheel(probs, num_samples=1))
+
+        neighbors = network.get_neighborhood(*gateways[i], r)
+        centroids = [network.get_centroid_pheromone_vec(r, c) for r, c in neighbors]
+        pheromones = [self.find_edge_pheromone(c, self.vec) for c in centroids]
+
+        idxs = self.roulette_wheel(np.array(pheromones) / np.sum(pheromones), num_samples=m, replace=False)
+        return [neighbors[i] for i in idxs]
+
+    def sample_gateway_pos(self) -> Tuple[int, int]:
+        if len(self.deg_seq) == 0:
+            raise ValueError("cannot find gateway node unless ant has traversed at least one node")
+        mod_seq = np.array(self.deg_seq) - 8 + self.eps
+        probs = mod_seq / np.sum(mod_seq)
+        i = int(self.roulette_wheel(probs))
+        return self.pos_seq[i]
 
     # do a roulette wheel decision with weighted probabilities
-    def roulette_wheel(self, probs: np.ndarray, num_samples: int = 1) -> float:
-        return rng.choice(np.arange(len(probs)), num_samples, p=probs)
+    def roulette_wheel(self, probs: np.ndarray, num_samples: int = 1, **kwargs) -> float:
+        return rng.choice(np.arange(len(probs)), num_samples, p=probs, **kwargs)
 
     # apply ant pheromone weighting
     def pheromone_weighting(self, sigma: float) -> float:
@@ -160,10 +199,39 @@ class Ant:
             return vec
         return update
 
+    def get_match_func(self):
+        def match(centroid_pheromone: np.ndarray) -> float:
+            return self.find_edge_pheromone(centroid_pheromone, self.vec)
+        return match
+
     def get_neighborhood_func(self):
         def func(dist: float) -> float:
             return (0.25) ** (dist)
         return func
+
+class HierarchicalAnt(Ant):
+    def __init__(self, vec: np.ndarray, pos: tuple, alpha: float, beta: float, delta: float, level: int = 0,
+                 eps: float = 0.01, reinforce_exp: float = 3.0, ant_id: int = None, document: str = None):
+        super().__init__(vec, pos, alpha, beta, delta, eps, reinforce_exp, ant_id, document)
+        self.level = level
+
+    def decide_next_position(self, network: HierarchicalLattice, 
+                             q: float = 0.2, r: int = 1, warmup: bool = False, search: bool = True, trim_pct: float = 0) -> bool:
+        net = network.get_level_network(self.level)
+        # find the warmup threshold, and update our warmup flag if we are using warmup
+        warmup_thresh = network.widths[self.level] // 4
+        warmup = warmup and self.age <= warmup_thresh
+        # get our stop signal from 
+        stop = super().decide_next_position(net, q, r, warmup, search, trim_pct)
+
+        if stop and self.level < len(network.levels) - 1:
+            self.level += 1
+            self.age = 0
+            self.pos = network.get_next_level_pos(*self.pos, self.level)
+        elif stop:
+            return True
+        return False
+        
 
 
 def parse_args():

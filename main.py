@@ -8,11 +8,11 @@ import matplotlib.animation as animation
 from network import LatticeNetwork
 from enum import Enum
 from tqdm import tqdm
-from typing import Tuple, Callable, Optional, List
+from typing import Tuple, Callable, Optional, List, Union
 from scipy.spatial.distance import cdist
 
 from ant import Ant
-from network import LatticeNetwork
+from network import LatticeNetwork, SmallWorldNetwork
 
 from store_visualize import load_embeds, balance_dataset_idx
 from model import load_model
@@ -34,6 +34,8 @@ def parse_args():
     args.add_argument("-q", "--greedy-prob", type=float, default=0.2)
     args.add_argument("-m", "--warmup-steps", type=int, default=0)
     args.add_argument("-e", "--export-video", action='store_true')
+    args.add_argument("-l", "--small-world", action='store_true')
+    args.add_argument("-u", "--num-rewires", type=int, default=1)
     return args.parse_args()
 
 def find_pheromone_map(ant, pheromones, vec):
@@ -44,10 +46,9 @@ def find_pheromone_map(ant, pheromones, vec):
     return diffs
 
 def organize_network(network: LatticeNetwork, ants: List[Tuple[int, Ant]], embeds: np.ndarray, sents: np.ndarray,
-                     num_steps: int, alpha: float, beta: float, delta: float, q: float, reinforce_exp: float, warmup_steps: int = 0,
-                     visualize: bool = False, enc: Optional[np.ndarray] = None):
-    ant_locs = []
-    count = 0 # args.num_ants
+                     num_steps: int, alpha: float, beta: float, delta: float, q: float, reinforce_exp: float, 
+                     num_rewires: int = 1, warmup_steps: int = 0, visualize: bool = False, enc: Optional[np.ndarray] = None):
+    count = args.num_ants
     total_ages = []
     frames = []
     # run ACO self organization
@@ -61,20 +62,29 @@ def organize_network(network: LatticeNetwork, ants: List[Tuple[int, Ant]], embed
                 pheromone_update = ant.get_pheromone_update_func()
                 neighborhood_func = ant.get_neighborhood_func()
                 network.deposit_pheromone_delta(pheromone_update, neighborhood_func, *ant.pos)
-                warmup = ant.age <= warmup_steps
+                warmup = ant.age < warmup_steps
                 s = ant.decide_next_position(network, q=q, warmup=warmup, search=True)
                 if s and not warmup:
                     loc = tuple(rng.choice(np.arange(network.documents.shape[0]), 2))
                     vec = embeds[count]
                     doc = sents[count]
                     k = count
-                    count = (count + 1) % len(ants)
+                    count = (count + 1) % len(embeds)
+                    # count += 1
                     # if ant.best_loc is not None and ant.pos != ant.best_loc:
                     #     network.add_edge(ant.pos, ant.best_loc)
                     #     # network.trim_neighbors(*ant.pos)
                     #     ant.pos = ant.best_loc
                     #     network.deposit_pheromone_delta(pheromone_update, neighborhood_func, *ant.best_loc)
+
+                    # attempt to create Styvers-Tannenbaum network via preferential rewiring
+                    # rewire_pos = ant.get_rewire_pos(network, num_rewires)
+                    # for r in rewire_pos:
+                    #     network.add_edge(ant.pos, r)
+                    # deposit document and pheromone delta
                     network.deposit_document(*ant.pos, ant.document, ant.vec)
+                    network.deposit_pheromone_delta(pheromone_update, neighborhood_func, *ant.pos)
+                    # update age statistics and reinitialize ant
                     total_ages += [ant.age]
                     ants[u] = (j, Ant(vec, loc, alpha, beta, delta, reinforce_exp=reinforce_exp, ant_id=k, document=doc))
                     status[j] = False
@@ -85,7 +95,8 @@ def organize_network(network: LatticeNetwork, ants: List[Tuple[int, Ant]], embed
             network.evaporate_pheromones()
             if i % 50 == 49:
                 # network.evolve_pheromones()
-                network.erode_network(min_dist=0.7)
+                network.erode_network(min_dist=0.5)
+                network.global_st_rewire(m=num_rewires)
             norms = np.linalg.norm(network.pheromones, axis=-1)
             best_matches = [ant.current_pheromone for _, ant in ants]
             t_iter.set_postfix(avg_pheromone_norm=np.mean(norms), avg_age=np.mean(ages), min_age=np.min(ages), max_age=np.max(ages), 
@@ -128,8 +139,37 @@ def ant_search(network: LatticeNetwork, ant: Ant, q: float, max_steps: Optional[
         a, b = ant.pos
         if status and len(network.documents[a, b]) != 0:
             return ant, network.documents[a, b], pos_seq, pheromone_seq
-        prev_status = status
         i += 1
+
+
+def rank_plot(elems: np.ndarray, counts: np.ndarray, title: str = ""):
+    # rank elements
+    tmp = np.argsort(elems)
+    ranks = np.empty_like(tmp)
+    ranks[tmp] = np.arange(1, len(elems) + 1)
+    
+    # set log-log scale
+    plt.xscale('log')
+    plt.yscale('log')
+    
+    # plot and show
+    plt.scatter(ranks, counts, label="datapoints")
+    plt.plot(np.max(ranks), np.max(counts), label="power law reference")
+    plt.title(title)
+    plt.legend()
+    plt.show()
+
+
+def plot_norm_vs_degree(network: Union[LatticeNetwork, SmallWorldNetwork], title: str = ""):
+    norms = np.linalg.norm(network.pheromones, axis=-1).flatten()
+    len_func = np.vectorize(lambda a: len(a))
+    degrees = len_func(network.neighbors).flatten()
+
+    plt.scatter(norms, degrees)
+    plt.title(title)
+    plt.xlabel("Pheromone Norm")
+    plt.ylabel("Node Degree")
+    plt.show()
 
 
 if __name__ == "__main__":
@@ -144,7 +184,8 @@ if __name__ == "__main__":
         frames = []
 
     categories, sentences, embeddings = load_embeds(args.input_data)
-    idxs = balance_dataset_idx(categories, 8 * args.num_ants, rng=rng)
+    _, counts = np.unique(categories, return_counts=True)
+    idxs = balance_dataset_idx(categories, len(counts) * np.min(counts), rng=rng)
     # e = embeddings[idxs]
     # dists = cdist(e, e)
     # plt.imshow(dists)
@@ -157,8 +198,12 @@ if __name__ == "__main__":
     sents = sentences[idxs]
     embeds = embeddings[idxs]
 
-    network = LatticeNetwork((args.width, args.width), embeds.shape[-1], args.evaporation_factor, 
-                             rng=rng, centroid_radius=args.centroid_radius, zeros=args.zeros)
+    if args.small_world:
+        network = SmallWorldNetwork((args.width, args.width), embeds.shape[-1], args.evaporation_factor, 0.01,
+                                    rng=rng, centroid_radius=args.centroid_radius, zeros=args.zeros)
+    else:
+        network = LatticeNetwork((args.width, args.width), embeds.shape[-1], args.evaporation_factor, 
+                                 rng=rng, centroid_radius=args.centroid_radius, zeros=args.zeros)
     existing_locs = set()
     ants = []
     status = []
@@ -219,14 +264,14 @@ if __name__ == "__main__":
     if args.export_video:
         network, ants, ages, total_ages, frames = organize_network(network, ants, embeds, sents, args.num_steps, 
                                                                    args.alpha, args.beta, args.delta, args.greedy_prob, args.reinforce_exp,
-                                                                   args.warmup_steps, args.export_video, enc)
+                                                                   num_rewires=args.num_rewires, warmup_steps=args.warmup_steps, visualize=args.export_video, enc=enc)
         ani = animation.ArtistAnimation(fig, frames, interval=50, blit=True)
         ani.save("animation.mp4")
         plt.show()
     else:
         network, ants, ages, total_ages = organize_network(network, ants, embeds, sents, args.num_steps, 
                                                            args.alpha, args.beta, args.delta, args.greedy_prob, args.reinforce_exp,
-                                                           args.warmup_steps)
+                                                           num_rewires=args.num_rewires, warmup_steps=args.warmup_steps)
 
     # total_ages += ages
     plt.hist(total_ages, bins=np.ptp(total_ages)+1)
@@ -234,25 +279,17 @@ if __name__ == "__main__":
     plt.show()
 
     unique, counts = np.unique(total_ages, return_counts=True)
-    log_unique = np.log(unique[1:])
-    log_freqs = np.log(counts[1:] / np.sum(counts[1:]))
-    plt.plot(log_unique, log_freqs)
-    plt.title("Ant Age Rank Plot")
-    plt.show()
+    rank_plot(unique, counts, "Ant Age Rank Plot")
 
     lens = [len(x) for x in network.neighbors.flatten()]
     u, c = np.unique(lens, return_counts=True)
-    lu, lc = np.log(u), np.log(c / np.sum(c))
-    plt.loglog(u, c)
-    plt.title("Network Degree Rank Plot")
-    plt.show()
+    rank_plot(u, c, "Network Degree Rank Plot")
 
     lens = [len(x) for x in network.documents.flatten()]
     u, c = np.unique(lens, return_counts=True)
-    lu, lc = np.log(u), np.log(c / np.sum(c))
-    plt.loglog(u, c)
-    plt.title("Document Count Rank Plot")
-    plt.show()
+    rank_plot(u, c, "Document Count Rank Plot")
+
+    plot_norm_vs_degree(network, "Node Degree vs Pheromone Norm")
 
     i = np.argmax(ages)
     vec = ants[i][1].vec
