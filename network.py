@@ -225,22 +225,32 @@ class LatticeNetwork():
 
     def deposit_pheromone(self, pheromone: np.ndarray, row: int, col: int):
         self.pheromones[row, col] = pheromone
+
+    def distance(self, pos_a: Tuple, pos_b: Tuple) -> int:
+        ra, ca = pos_a
+        rb, cb = pos_b
+        dr, dc = abs(ra - rb), abs(ca - cb)
+        if dr > (self.pheromones.shape[0] / 2):
+            dr = self.pheromones.shape[0] - dr
+        if dc > (self.pheromones.shape[1] / 2):
+            dc = self.pheromones.shape[1] - dc
+        return max(dr, dc)
     
     def deposit_pheromone_delta(self, pheromone_func: Callable[[np.ndarray, np.ndarray, float], np.ndarray], 
                                 neighborhood_func: Callable[[float], float],
-                                row: int, col: int, neighborhood: bool = True):
+                                row: int, col: int, exclude_list: List[Tuple] = [], neighborhood: bool = True, alpha: float = 1):
         centroid, node = self.get_centroid_pheromone_vec(row, col), self.get_pheromone_vec(row, col)
         # TODO: figure out the scale to use
-        self.pheromones[row, col] = pheromone_func(centroid, node, neighborhood_func(0))
+        self.pheromones[row, col] = pheromone_func(centroid, node, alpha * neighborhood_func(0))
         if neighborhood:
-            neighbors = self.get_neighborhood(row, col, self.centroid_radius, [(row, col)])
+            neighbors = self.get_neighborhood(row, col, self.centroid_radius, [(row, col)] + exclude_list)
             for r, c in neighbors:
                 centroid = self.get_centroid_pheromone_vec(r, c, [(row, col)])
                 node = self.get_pheromone_vec(r, c)
-                # dist = max(abs(row - r), abs(col - c))
-                dist = float(np.sqrt((row - r) ** 2 + (col - c) ** 2))
-                self.pheromones[r, c] = pheromone_func(centroid, node, neighborhood_func(dist))
-
+                dist = self.distance((row, col), (r, c))
+                # dist = float(np.sqrt((row - r) ** 2 + (col - c) ** 2))
+                self.pheromones[r, c] = pheromone_func(centroid, node, alpha * neighborhood_func(dist))
+    
     def deposit_pheromone_droplet(self, pheromone_func: Callable[[np.ndarray, np.ndarray, float], np.ndarray], 
                                   match_func: Callable[[np.ndarray], float], 
                                   row: int, col: int, neighborhood: bool = True, num_select: int = 4):
@@ -302,6 +312,33 @@ class LatticeNetwork():
             dists = [dist_func(v, node_vec) for v in vec_list]
             self.documents[r, c] = [doc for i, doc in enumerate(doc_list) if dists[i] < min_dist]
             self.doc_vecs[r, c] = [vec for i, vec in enumerate(vec_list) if dists[i] < min_dist]
+
+    def evolve_docs(self, dist_func: Callable = inv_cos_dist, top_p: float = 0.8):
+        lens = np.array([[len(c) for c in r] for r in self.documents]) 
+        idxr, idxc = lens.nonzero()
+        for r, c in zip(idxr, idxc):
+            doc_list = np.array(self.documents[r, c])
+            vec_list = np.array(self.doc_vecs[r, c])
+            node_vec = self.get_pheromone_vec(r, c)
+
+            # get document distances
+            dists = [dist_func(v, node_vec) for v in vec_list]
+            # change distances to scores and normalize
+            scores = np.array([2 - d for d in dists])
+            scores = scores / np.sum(scores)
+
+            total = 0
+            mask = np.zeros(scores.shape, dtype=bool)
+            for i in scores.argsort()[::-1]:
+                total += scores[i]
+                if total <= top_p:
+                    mask[i] = True
+                else:
+                    break
+            
+            self.documents[r, c] = doc_list[mask].tolist()
+            self.doc_vecs[r, c] = vec_list[mask].tolist()
+
 
     def deposit_document(self, row: int, col: int, document: str, vec: np.ndarray):
         self.documents[row, col] += [document]

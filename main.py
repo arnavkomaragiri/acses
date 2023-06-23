@@ -23,8 +23,8 @@ def parse_args():
     args.add_argument("-w", "--width", type=int, default=100)
     args.add_argument("-n", "--num-ants", type=int, default=1000)
     args.add_argument("-a", "--alpha", type=float, default=1)
-    args.add_argument("-b", "--beta", type=float, default=32)
-    args.add_argument("-d", "--delta", type=float, default=0.2)
+    args.add_argument("-b", "--beta", type=float, default=2.7)
+    args.add_argument("-d", "--delta", type=float, default=2)
     args.add_argument("-k", "--reinforce-exp", type=float, default=3)
     args.add_argument("-i", "--input-data", type=str, default='test_embed.pkl')
     args.add_argument("-s", "--num-steps", type=int, default=200)
@@ -37,6 +37,8 @@ def parse_args():
     args.add_argument("-l", "--small-world", action='store_true')
     args.add_argument("-u", "--num-rewires", type=int, default=1)
     args.add_argument("-g", "--geometry", type=str, choices=["euclidean", "graph"], default="euclidean")
+    args.add_argument("-o", "--smooth-init", action='store_true')
+    args.add_argument("--wikipedia", action='store_true')
     return args.parse_args()
 
 def find_pheromone_map(ant, pheromones, vec):
@@ -59,13 +61,19 @@ def organize_network(network: LatticeNetwork, ants: List[Tuple[int, Ant]], embed
             rng.shuffle(ants)
             sum_age = 0
             ages = []
+            max_pher = np.max([ant.current_pheromone for _, ant in ants])
             for u, (j, ant) in enumerate(ants):
-                # new_pheromone = ant.get_new_pheromone_vec(network)
+                # get pheromone update functions
                 pheromone_update = ant.get_pheromone_update_func()
                 neighborhood_func = ant.get_neighborhood_func()
-                network.deposit_pheromone_delta(pheromone_update, neighborhood_func, *ant.pos)
+                # get ant pos and deposit pheromone delta in neighborhood
+                pos = ant.pos
+                network.deposit_pheromone_delta(pheromone_update, neighborhood_func, *pos)
+                # make ant decision
                 warmup = ant.age < warmup_steps
-                s = ant.decide_next_position(network, q=q, warmup=warmup, search=True)
+                s = ant.advance(network, q=q, warmup=warmup, search=True)
+                # deposit pheromone inhibition to every non-visited node in neighborhood
+                # network.deposit_pheromone_delta(pheromone_update, neighborhood_func, *pos, exclude_list=[ant.pos], alpha=-0.5)
                 if s and not warmup:
                     loc = tuple(rng.choice(np.arange(network.documents.shape[0]), 2))
                     vec = embeds[count]
@@ -83,10 +91,15 @@ def organize_network(network: LatticeNetwork, ants: List[Tuple[int, Ant]], embed
                     # attempt to create Styvers-Tannenbaum network via preferential rewiring
                     # rewire_pos = ant.get_rewire_pos(network, num_rewires)
                     # for r in rewire_pos:
-                    #     network.add_edge(ant.pos, r)
+                        # network.add_edge(ant.pos, r)
                     # deposit document and pheromone delta
                     network.deposit_document(*ant.pos, ant.document, ant.vec)
-                    network.deposit_pheromone_delta(pheromone_update, neighborhood_func, *ant.pos)
+                    # network.deposit_pheromone_delta(pheromone_update, neighborhood_func, *ant.pos)
+                    # pher_credit = ant.pher_seq[-1] / np.max(ant.pher_seq)
+                    pher_credit = ant.pher_seq[-1] / max_pher
+                    alpha = pher_credit / len(ant.pos_seq)
+                    for p in ant.pos_seq:
+                        network.deposit_pheromone_delta(pheromone_update, neighborhood_func, *p, alpha=alpha)
                     # update age statistics and reinitialize ant
                     total_ages += [ant.age]
                     ants[u] = (j, Ant(vec, loc, alpha, beta, delta, reinforce_exp=reinforce_exp, ant_id=k, document=doc, geometry=geometry))
@@ -98,8 +111,9 @@ def organize_network(network: LatticeNetwork, ants: List[Tuple[int, Ant]], embed
             network.evaporate_pheromones()
             if i % 50 == 49:
                 # network.evolve_pheromones()
-                network.erode_network(min_dist=0.6)
-                network.global_st_rewire(m=num_rewires)
+                # network.erode_network(min_dist=0.6)
+                network.evolve_docs()
+                # network.global_st_rewire(m=num_rewires)
             norms = np.linalg.norm(network.pheromones, axis=-1)
             best_matches = [ant.current_pheromone for _, ant in ants]
             t_iter.set_postfix(avg_pheromone_norm=np.mean(norms), avg_age=np.mean(ages), min_age=np.min(ages), max_age=np.max(ages), 
@@ -131,7 +145,7 @@ def ant_search(network: LatticeNetwork, ant: Ant, q: float, max_steps: Optional[
         if max_steps is not None and i > max_steps:
             return None
         pos_seq += [ant.pos]
-        status = ant.decide_next_position(network, q=q, search=True)
+        status = ant.advance(network, q=q, search=True)
         pheromone = ant.find_edge_pheromone(network.get_pheromone_vec(*ant.pos), ant.vec)
         # if len(pheromone_seq) != 0 and pheromone < pheromone_seq[-1]:
             # status = True
@@ -147,9 +161,9 @@ def ant_search(network: LatticeNetwork, ant: Ant, q: float, max_steps: Optional[
 
 def rank_plot(elems: np.ndarray, counts: np.ndarray, title: str = ""):
     # rank elements
-    tmp = np.argsort(elems)
+    tmp = np.argsort(counts)[::-1]
     ranks = np.empty_like(tmp)
-    ranks[tmp] = np.arange(1, len(elems) + 1)
+    ranks[tmp] = np.arange(1, len(counts) + 1)
     
     # set log-log scale
     plt.xscale('log')
@@ -207,7 +221,8 @@ if __name__ == "__main__":
     else:
         network = LatticeNetwork((args.width, args.width), embeds.shape[-1], args.evaporation_factor, 
                                  rng=rng, centroid_radius=args.centroid_radius, zeros=args.zeros)
-    network.smooth_init_pheromones(0.5, 0.1)
+    if args.smooth_init:
+        network.smooth_init_pheromones(0.1, 0.1)
     existing_locs = set()
     ants = []
     status = []
@@ -217,54 +232,6 @@ if __name__ == "__main__":
         ants += [(i, Ant(ant_vec, loc, args.alpha, args.beta, args.delta, reinforce_exp=args.reinforce_exp, ant_id=i, document=sents[i], geometry=args.geometry))]
         status += [False]
 
-    # ant_locs = []
-    # count = 0 # args.num_ants
-    # total_ages = []
-    # # run ACO self organization
-    # with tqdm(range(args.num_steps)) as t_iter:
-    #     for i in t_iter:
-    #         rng.shuffle(ants)
-    #         sum_age = 0
-    #         ages = []
-    #         for u, (j, ant) in enumerate(ants):
-    #             # new_pheromone = ant.get_new_pheromone_vec(network)
-    #             pheromone_update = ant.get_pheromone_update_func()
-    #             neighborhood_func = ant.get_neighborhood_func()
-    #             network.deposit_pheromone_delta(pheromone_update, neighborhood_func, *ant.pos)
-    #             s = ant.decide_next_position(network, args.greedy_prob)
-    #             if s and status[j] and i > args.warmup_steps:
-    #                 loc = tuple(rng.choice(np.arange(args.width), 2))
-    #                 vec = embeds[count]
-    #                 doc = sents[count]
-    #                 k = count
-    #                 count = (count + 1) % args.num_ants
-    #                 # if ant.best_loc is not None and ant.pos != ant.best_loc:
-    #                 #     network.add_edge(ant.pos, ant.best_loc)
-    #                 #     ant.pos = ant.best_loc
-    #                 #     network.deposit_pheromone_delta(pheromone_update, neighborhood_func, *ant.best_loc)
-    #                 network.deposit_document(*ant.pos, ant.document, ant.vec)
-    #                 total_ages += [ant.age]
-    #                 ants[u] = (j, Ant(vec, loc, 1, args.beta, args.delta, reinforce_exp=args.reinforce_exp, ant_id=k, document=doc))
-    #                 status[j] = False
-    #             else:
-    #                 status[j] = s
-    #             sum_age += ant.age
-    #             ages += [ant.age]
-    #         network.evaporate_pheromones()
-    #         if i % 50 == 49:
-    #             network.erode_network()
-    #         norms = np.linalg.norm(network.pheromones, axis=-1)
-    #         best_matches = [ant.best_pheromone for _, ant in ants]
-    #         t_iter.set_postfix(avg_pheromone_norm=np.mean(norms), avg_age=np.mean(ages), min_age=np.min(ages), max_age=np.max(ages), 
-    #                            best_match=np.max(best_matches), avg_match=np.mean(best_matches), count=count)
-
-    #         if args.export_video:
-    #             map = find_pheromone_map(ant, network.pheromones, enc)
-    #             frames.append([plt.imshow(map, animated=True)])
-    #         # t_iter.set_postfix(num_stopped=sum(status))
-    #         # pct_stop = sum(status) / len(status)
-    #         # if pct_stop > 0.9:
-    #         #     break
     if args.export_video:
         network, ants, ages, total_ages, frames = organize_network(network, ants, embeds, sents, args.num_steps, 
                                                                    args.alpha, args.beta, args.delta, args.greedy_prob, args.reinforce_exp,

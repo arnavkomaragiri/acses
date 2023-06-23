@@ -61,7 +61,7 @@ def organize_network(network: LatticeNetwork, ants: List[Tuple[int, Ant]], embed
                 pheromone_update = ant.get_pheromone_update_func()
                 neighborhood_func = ant.get_neighborhood_func()
                 network.levels[ant.level].deposit_pheromone_delta(pheromone_update, neighborhood_func, *ant.pos)
-                stop = ant.decide_next_position(network, q=q, warmup=warmup, search=True)
+                stop = ant.advance(network, q=q, warmup=warmup, search=True)
                 if stop:
                     loc = tuple(rng.choice(np.arange(network.widths[0]), 2))
                     vec = embeds[count]
@@ -117,7 +117,7 @@ def ant_search(network: HierarchicalLattice, ant: HierarchicalAnt, q: float, max
         if max_steps is not None and i > max_steps:
             return None
         pos_seq += [ant.pos]
-        status = ant.decide_next_position(network, q=q, search=True)
+        status = ant.advance(network, q=q, search=True)
         pheromone = ant.find_edge_pheromone(network.levels[ant.level].get_pheromone_vec(*ant.pos), ant.vec)
         pheromone_seq += [pheromone]
         

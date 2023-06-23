@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from network import LatticeNetwork, HierarchicalLattice, euclidean_dist, ip_dist, inv_cos_dist
 from enum import Enum
 from tqdm import tqdm
-from typing import Tuple, Callable, List
+from typing import Tuple, Callable, List, Optional
 
 rng = np.random.default_rng(seed=0)
 
@@ -75,23 +75,30 @@ class Ant:
             penalty = 2 ** (-num_visited)
             return penalty
 
-    def decide_next_position(self, network: LatticeNetwork, q: float = 0.2, r: int = 1, 
-                             warmup: bool = False, search: bool = False, trim_pct: float = 0.0, move_diff: bool = True) -> bool:
+    def get_pheromone_landscape(self, network: LatticeNetwork, r: int = 1, pos: Optional[Tuple] = None, exclude_list: List = []) -> np.ndarray:
+        if pos is None:
+            pos = self.pos
         # compute neighbors and corresponding pheromone levels
-        neighbors = network.get_neighborhood(*self.pos, radius=r, exclude_list=[self.pos])
-        centroid_vecs = [network.get_centroid_pheromone_vec(r, c, [self.pos]) for r, c in neighbors]
+        neighbors = network.get_neighborhood(*pos, radius=r, exclude_list=exclude_list)
+        centroid_vecs = [network.get_centroid_pheromone_vec(r, c, [pos]) for r, c in neighbors]
         pheromones = [self.find_edge_pheromone(centroid_vecs[i], self.vec) for i in range(len(neighbors))]
-
-        # compute current node pheromones
-        cent = network.get_centroid_pheromone_vec(*self.pos)
-        self.current_pheromone = self.find_edge_pheromone(cent, self.vec)
-
+        
         # scale decisions based on document count heatmaps
         if network.count_heatmap is not None:
             dists = [self.dist(centroid_vecs[i], self.vec) for i in range(len(neighbors))]
             count_heats = [network.count_heatmap[r, c] for r, c in neighbors]
             count_mults = [h ** (0.5 * (2 - d)) for h, d in zip(count_heats, dists)]
             pheromones = [count_mults[i] * p for i, p in enumerate(pheromones)]
+        return neighbors, pheromones
+
+    def advance(self, network: LatticeNetwork, q: float = 0.2, r: int = 1, exclude_list: List = [],
+                warmup: bool = False, search: bool = False, trim_pct: float = 0.0, move_diff: bool = True) -> bool:
+        # get local pheromone landscape
+        neighbors, pheromones = self.get_pheromone_landscape(network, r, exclude_list=exclude_list+[self.pos])
+
+        # compute current node pheromones
+        cent = network.get_centroid_pheromone_vec(*self.pos)
+        self.current_pheromone = self.find_edge_pheromone(cent, self.vec)
 
         # enforce that pheromones consistently get better if there is room to improve
         if search and any([p >= self.current_pheromone for p in pheromones]):
@@ -223,14 +230,14 @@ class HierarchicalAnt(Ant):
         super().__init__(vec, pos, alpha, beta, delta, eps, reinforce_exp, ant_id, document)
         self.level = level
 
-    def decide_next_position(self, network: HierarchicalLattice, 
-                             q: float = 0.2, r: int = 1, warmup: bool = False, search: bool = True, trim_pct: float = 0) -> bool:
+    def advance(self, network: HierarchicalLattice, 
+                q: float = 0.2, r: int = 1, warmup: bool = False, search: bool = True, trim_pct: float = 0) -> bool:
         net = network.get_level_network(self.level)
         # find the warmup threshold, and update our warmup flag if we are using warmup
         warmup_thresh = network.widths[self.level] // 4
         warmup = warmup and self.age <= warmup_thresh
         # get our stop signal from 
-        stop = super().decide_next_position(net, q, r, warmup, search, trim_pct)
+        stop = super().advance(net, q, r, warmup, search, trim_pct)
 
         if stop and self.level < len(network.levels) - 1:
             self.level += 1
@@ -328,7 +335,7 @@ if __name__ == "__main__":
     prev_status = False
     while True:
         pos_seq += [new_ant.pos]
-        status = new_ant.decide_next_position(network, q=args.greedy_prob)
+        status = new_ant.advance(network, q=args.greedy_prob)
         pheromone = new_ant.find_edge_pheromone(network.get_pheromone_vec(*new_ant.pos), new_ant.vec)
         pheromone_seq += [pheromone]
         # print(status, pheromone / np.max(diffs[new_ant_class]))
