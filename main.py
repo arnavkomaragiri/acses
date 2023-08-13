@@ -67,8 +67,10 @@ def organize_network(network: LatticeNetwork, ants: List[Tuple[int, Ant]], embed
                 pheromone_update = ant.get_pheromone_update_func()
                 neighborhood_func = ant.get_neighborhood_func()
                 # get ant pos and deposit pheromone delta in neighborhood
+                # TODO: figure out how to fix this shit, this stuff is ugly as hell
                 pos = ant.pos
-                network.deposit_pheromone_delta(pheromone_update, neighborhood_func, *pos)
+                neighbors = network.get_neighborhood(*pos, network.centroid_radius)
+                network.deposit_pheromone_delta(pheromone_update, neighborhood_func, *pos, exclude_list=neighbors)
                 # make ant decision
                 warmup = ant.age < warmup_steps
                 s = ant.advance(network, q=q, warmup=warmup, search=True)
@@ -89,9 +91,9 @@ def organize_network(network: LatticeNetwork, ants: List[Tuple[int, Ant]], embed
                     #     network.deposit_pheromone_delta(pheromone_update, neighborhood_func, *ant.best_loc)
 
                     # attempt to create Styvers-Tannenbaum network via preferential rewiring
-                    # rewire_pos = ant.get_rewire_pos(network, num_rewires)
-                    # for r in rewire_pos:
-                        # network.add_edge(ant.pos, r)
+                    rewire_pos = ant.get_rewire_pos(network, num_rewires)
+                    for r in rewire_pos:
+                        network.add_edge(ant.pos, r)
                     # deposit document and pheromone delta
                     network.deposit_document(*ant.pos, ant.document, ant.vec)
                     # network.deposit_pheromone_delta(pheromone_update, neighborhood_func, *ant.pos)
@@ -121,6 +123,7 @@ def organize_network(network: LatticeNetwork, ants: List[Tuple[int, Ant]], embed
             if visualize:
                 map = find_pheromone_map(ant, network.pheromones, enc)
                 frames.append([plt.imshow(map, animated=True)])
+    print('ended self organization loop')
     if visualize:
         return network, ants, ages, total_ages, frames 
     return network, ants, ages, total_ages
@@ -246,6 +249,7 @@ if __name__ == "__main__":
                                                            num_rewires=args.num_rewires, warmup_steps=args.warmup_steps,
                                                            geometry=args.geometry)
 
+    print('finished self organization')
     # total_ages += ages
     plt.hist(total_ages, bins=np.ptp(total_ages)+1)
     plt.title("Ant Age Histogram")
