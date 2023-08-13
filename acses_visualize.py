@@ -14,7 +14,7 @@ if __name__ == "__main__":
     sent = input("Input Query: ")
     emb = model.encode(sent)
 
-    ant = init_ant(network, emb, 1, 32, 0.2, doc=sent)
+    ant = init_ant(network, emb, 1, 2.7, 2, doc=sent)
 
     pher_map = find_pheromone_map(ant, network.pheromones, emb)
     plt.imshow(pher_map)

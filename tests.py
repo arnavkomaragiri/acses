@@ -12,8 +12,8 @@ def parse_args():
     args.add_argument("-w", "--width", type=int, default=100)
     args.add_argument("-n", "--num-ants", type=int, default=1000)
     args.add_argument("-a", "--alpha", type=float, default=1)
-    args.add_argument("-b", "--beta", type=float, default=32)
-    args.add_argument("-d", "--delta", type=float, default=0.2)
+    args.add_argument("-b", "--beta", type=float, default=2.7)
+    args.add_argument("-d", "--delta", type=float, default=2)
     args.add_argument("-k", "--reinforce-exp", type=float, default=3)
     args.add_argument("-i", "--input-data", type=str, default='test_embed.pkl')
     args.add_argument("-s", "--num-steps", type=int, default=200)
@@ -69,6 +69,8 @@ if __name__ == '__main__':
     acses_maxs = []
     acses_matches = []
 
+    path_map = np.zeros((args.width, args.width))
+
     idxs = np.arange(all_docs.shape[0])
     np.random.shuffle(idxs)
     # sample N documents and compare ACSeS vs random allocation 
@@ -87,6 +89,8 @@ if __name__ == '__main__':
         data = ant_search(acses_network, ant, q=args.greedy_prob, max_steps=200)
         if data is not None:
             ant, acses_docs, pos_seq, pher_seq = data
+            for r, c in pos_seq:
+                path_map[r, c] += 1
             # get the vectors stored in the ACSeS-selected node
             acses_node_idx = pos_seq[-1]
             acses_vecs = acses_network.doc_vecs[acses_node_idx[0]][acses_node_idx[1]]
@@ -129,6 +133,10 @@ if __name__ == '__main__':
         baseline_mins += [np.min(baseline_dists)]
         baseline_maxs += [np.max(baseline_dists)]
 
+
+    plt.imshow(path_map)
+    plt.title("Ant Path Trails")
+    plt.show()
 
     acses_eff = len([a for a in acses_mins if a == 2.0]) / len(acses_mins)
     baseline_eff = len([b for b in baseline_mins if b == 2.0]) / len(baseline_mins)

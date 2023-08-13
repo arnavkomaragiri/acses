@@ -91,17 +91,17 @@ def organize_network(network: LatticeNetwork, ants: List[Tuple[int, Ant]], embed
                     #     network.deposit_pheromone_delta(pheromone_update, neighborhood_func, *ant.best_loc)
 
                     # attempt to create Styvers-Tannenbaum network via preferential rewiring
-                    rewire_pos = ant.get_rewire_pos(network, num_rewires)
-                    for r in rewire_pos:
-                        network.add_edge(ant.pos, r)
+                    # rewire_pos = ant.get_rewire_pos(network, num_rewires)
+                    # for r in rewire_pos:
+                    #     network.add_edge(ant.pos, r)
                     # deposit document and pheromone delta
                     network.deposit_document(*ant.pos, ant.document, ant.vec)
-                    # network.deposit_pheromone_delta(pheromone_update, neighborhood_func, *ant.pos)
+                    network.deposit_pheromone_delta(pheromone_update, neighborhood_func, *ant.pos)
                     # pher_credit = ant.pher_seq[-1] / np.max(ant.pher_seq)
-                    pher_credit = ant.pher_seq[-1] / max_pher
-                    alpha = pher_credit / len(ant.pos_seq)
-                    for p in ant.pos_seq:
-                        network.deposit_pheromone_delta(pheromone_update, neighborhood_func, *p, alpha=alpha)
+                    # pher_credit = ant.pher_seq[-1] / max_pher
+                    # alpha = pher_credit / len(ant.pos_seq)
+                    # for p in ant.pos_seq:
+                    #     network.deposit_pheromone_delta(pheromone_update, neighborhood_func, *p, alpha=alpha)
                     # update age statistics and reinitialize ant
                     total_ages += [ant.age]
                     ants[u] = (j, Ant(vec, loc, alpha, beta, delta, reinforce_exp=reinforce_exp, ant_id=k, document=doc, geometry=geometry))
